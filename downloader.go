@@ -134,8 +134,12 @@ func (d *Downloader) Download(ctx context.Context, outputPath string, progressFn
 			return nil
 		}
 		// Check if partial file exists that can be resumed (e.g., downloaded by wget or another tool)
-		if stat.Size() > 0 && stat.Size() < fileInfo.size && (fileInfo.supportsRange || d.forceTryRange) {
-			return d.resumeExistingFile(ctx, outputPath, urls, fileInfo, stat.Size(), progressFn)
+		if fileInfo.size > 0 && stat.Size() > 0 && stat.Size() < fileInfo.size && (fileInfo.supportsRange || d.forceTryRange) {
+			err := d.resumeExistingFile(ctx, outputPath, urls, fileInfo, stat.Size(), progressFn)
+			if err == nil {
+				return nil
+			}
+			// If resume failed (e.g., server doesn't support range), fall through to fresh download
 		}
 	}
 
