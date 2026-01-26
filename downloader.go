@@ -392,8 +392,6 @@ func (d *Downloader) resumeExistingFileChunked(ctx context.Context, outputPath s
 	var downloadedBytes atomic.Int64
 	var workersDownloadBytes []atomic.Int64
 
-	reportCh := make(chan struct{}, 1)
-
 	if progressFn != nil {
 		downloadedBytes.Store(existingSize)
 		workersDownloadBytes = make([]atomic.Int64, d.concurrency)
@@ -414,7 +412,6 @@ func (d *Downloader) resumeExistingFileChunked(ctx context.Context, outputPath s
 			}
 		}()
 	}
-	_ = reportCh // suppress unused variable warning
 
 	concurrency := min(d.concurrency, len(remainingChunks))
 
