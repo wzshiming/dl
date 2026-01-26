@@ -133,6 +133,10 @@ func (d *Downloader) Download(ctx context.Context, outputPath string, progressFn
 			}
 			return nil
 		}
+		// Check if partial file exists that can be resumed (e.g., downloaded by wget or another tool)
+		if stat.Size() > 0 && stat.Size() < fileInfo.size && (fileInfo.supportsRange || d.forceTryRange) {
+			return d.resumeExistingFile(ctx, outputPath, urls, fileInfo, stat.Size(), progressFn)
+		}
 	}
 
 	// Ensure output directory exists
@@ -270,6 +274,73 @@ func (d *Downloader) downloadDirect(ctx context.Context, outputPath string, urls
 		return lastErr
 	}
 	return errors.New("failed to download from all mirrors")
+}
+
+// resumeExistingFile resumes downloading to an existing partial file (e.g., one downloaded by wget or another tool).
+// It appends to the existing file using HTTP Range requests.
+func (d *Downloader) resumeExistingFile(ctx context.Context, outputPath string, urls []string, info *fileInfo, existingSize int64, progressFn ProgressFunc) error {
+	var lastErr error
+	for _, url := range urls {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		// Request only the remaining bytes
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", existingSize))
+
+		resp, err := d.httpClient.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		if resp.StatusCode != http.StatusPartialContent {
+			resp.Body.Close()
+			// Server doesn't support range requests, fall back to fresh download
+			if resp.StatusCode == http.StatusOK {
+				lastErr = errors.New("server does not support resuming, will download from beginning")
+			} else {
+				lastErr = fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+			}
+			continue
+		}
+
+		// Open the existing file for appending
+		file, err := os.OpenFile(outputPath, os.O_APPEND|os.O_WRONLY, 0644)
+		if err != nil {
+			resp.Body.Close()
+			return fmt.Errorf("failed to open output file for appending: %w", err)
+		}
+
+		var reader io.Reader = resp.Body
+		if progressFn != nil {
+			reader = &progressReader{
+				ctx:        ctx,
+				reader:     resp.Body,
+				total:      info.size,
+				read:       existingSize,
+				progressFn: progressFn,
+			}
+		}
+
+		_, err = io.Copy(file, reader)
+		_ = file.Close()
+		_ = resp.Body.Close()
+
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		return nil
+	}
+
+	if lastErr != nil {
+		return lastErr
+	}
+	return errors.New("failed to resume download from all mirrors")
 }
 
 // downloadChunked performs a chunked concurrent download with resume support.
