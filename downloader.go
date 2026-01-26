@@ -104,17 +104,11 @@ type chunk struct {
 	partFile string // path to the chunk part file
 }
 
-// Progress provides information about download progress.
-type Progress struct {
-	TotalBytes      int64
-	DownloadedBytes int64
-}
-
 // ProgressFunc is a callback function for reporting download progress.
-type ProgressFunc func(progress Progress)
+type ProgressFunc func(downloaded, total int64)
 
 // Download downloads a file with progress reporting.
-func (d *Downloader) Download(ctx context.Context, outputPath string, progressFn ProgressFunc, urls ...string) error {
+func (d *Downloader) Download(ctx context.Context, outputPath string, progressFunc ProgressFunc, urls ...string) error {
 	if len(urls) == 0 {
 		return ErrNoMirrors
 	}
@@ -128,8 +122,8 @@ func (d *Downloader) Download(ctx context.Context, outputPath string, progressFn
 	// Check if file is already complete
 	if stat, err := os.Stat(outputPath); err == nil {
 		if stat.Size() == fileInfo.size && fileInfo.size > 0 {
-			if progressFn != nil {
-				progressFn(Progress{TotalBytes: fileInfo.size, DownloadedBytes: fileInfo.size})
+			if progressFunc != nil {
+				progressFunc(fileInfo.size, fileInfo.size)
 			}
 			return nil
 		}
@@ -141,15 +135,15 @@ func (d *Downloader) Download(ctx context.Context, outputPath string, progressFn
 	}
 
 	if !fileInfo.supportsRange && !d.forceTryRange {
-		return d.downloadDirect(ctx, outputPath, urls, progressFn)
+		return d.downloadDirect(ctx, outputPath, urls, progressFunc)
 	}
 
 	if fileInfo.size <= d.chunkSize {
-		return d.downloadDirect(ctx, outputPath, urls, progressFn)
+		return d.downloadDirect(ctx, outputPath, urls, progressFunc)
 	}
 
 	// Chunked concurrent download with resume support
-	return d.downloadChunked(ctx, outputPath, urls, fileInfo, progressFn)
+	return d.downloadChunked(ctx, outputPath, urls, fileInfo, progressFunc)
 }
 
 // fileInfo contains information about the remote file.
@@ -194,7 +188,7 @@ func (d *Downloader) getFileInfo(ctx context.Context, urls []string) (*fileInfo,
 }
 
 // downloadDirect downloads a file without chunking (fallback for small files or servers without range support).
-func (d *Downloader) downloadDirect(ctx context.Context, outputPath string, urls []string, progressFn ProgressFunc) error {
+func (d *Downloader) downloadDirect(ctx context.Context, outputPath string, urls []string, progressFunc ProgressFunc) error {
 	tmpFile := entireFilePath(outputPath) + tmpFileSuffix
 	var lastErr error
 	for _, url := range urls {
@@ -238,13 +232,13 @@ func (d *Downloader) downloadDirect(ctx context.Context, outputPath string, urls
 		}
 
 		var reader io.Reader = resp.Body
-		if progressFn != nil {
+		if progressFunc != nil {
 			reader = &progressReader{
-				ctx:        ctx,
-				reader:     resp.Body,
-				total:      resp.ContentLength + existingSize,
-				read:       existingSize,
-				progressFn: progressFn,
+				ctx:          ctx,
+				reader:       resp.Body,
+				total:        resp.ContentLength + existingSize,
+				read:         existingSize,
+				progressFunc: progressFunc,
 			}
 		}
 
@@ -274,7 +268,7 @@ func (d *Downloader) downloadDirect(ctx context.Context, outputPath string, urls
 
 // downloadChunked performs a chunked concurrent download with resume support.
 // Each chunk is downloaded to a separate part file, then merged when complete.
-func (d *Downloader) downloadChunked(ctx context.Context, outputPath string, urls []string, info *fileInfo, progressFn ProgressFunc) error {
+func (d *Downloader) downloadChunked(ctx context.Context, outputPath string, urls []string, info *fileInfo, progressFunc ProgressFunc) error {
 
 	// Calculate all chunks and their part file paths
 	allChunks := d.calculateChunks(outputPath, info.size)
@@ -287,8 +281,8 @@ func (d *Downloader) downloadChunked(ctx context.Context, outputPath string, url
 
 	// If all chunks are complete, merge them
 	if len(pendingChunks) == 0 {
-		if progressFn != nil {
-			progressFn(Progress{TotalBytes: info.size, DownloadedBytes: info.size})
+		if progressFunc != nil {
+			progressFunc(info.size, info.size)
 		}
 		return d.mergeChunks(outputPath, allChunks)
 	}
@@ -313,7 +307,7 @@ func (d *Downloader) downloadChunked(ctx context.Context, outputPath string, url
 
 	reportCh := make(chan struct{}, 1)
 
-	if progressFn != nil {
+	if progressFunc != nil {
 		for _, c := range completedChunks {
 			downloadedBytes.Add(c.end - c.start + 1)
 		}
@@ -330,7 +324,7 @@ func (d *Downloader) downloadChunked(ctx context.Context, outputPath string, url
 					for i := range workersDownloadBytes {
 						totalDownloaded += workersDownloadBytes[i].Load()
 					}
-					progressFn(Progress{TotalBytes: info.size, DownloadedBytes: totalDownloaded})
+					progressFunc(totalDownloaded, info.size)
 				}
 			}
 		}()
@@ -346,9 +340,9 @@ func (d *Downloader) downloadChunked(ctx context.Context, outputPath string, url
 			defer wg.Done()
 
 			var chunkProgressFn ProgressFunc
-			if progressFn != nil {
-				chunkProgressFn = func(p Progress) {
-					workersDownloadBytes[workerID].Store(p.DownloadedBytes)
+			if progressFunc != nil {
+				chunkProgressFn = func(downloaded, total int64) {
+					workersDownloadBytes[workerID].Store(downloaded)
 					select {
 					case reportCh <- struct{}{}:
 					default:
@@ -387,7 +381,7 @@ func (d *Downloader) downloadChunked(ctx context.Context, outputPath string, url
 					return
 				}
 
-				if progressFn != nil {
+				if progressFunc != nil {
 					downloadedBytes.Add(workersDownloadBytes[workerID].Swap(0))
 				}
 			}
@@ -479,7 +473,7 @@ func (d *Downloader) downloadChunkToFile(ctx context.Context, url string, c chun
 				return err
 			}
 			if progressFn != nil {
-				progressFn(Progress{TotalBytes: expectedSize, DownloadedBytes: expectedSize})
+				progressFn(expectedSize, expectedSize)
 			}
 			return nil
 		}
@@ -514,11 +508,11 @@ func (d *Downloader) downloadChunkToFile(ctx context.Context, url string, c chun
 	var reader io.Reader = resp.Body
 	if progressFn != nil {
 		reader = &progressReader{
-			ctx:        ctx,
-			reader:     resp.Body,
-			total:      resp.ContentLength + existingSize,
-			read:       existingSize,
-			progressFn: progressFn,
+			ctx:          ctx,
+			reader:       resp.Body,
+			total:        resp.ContentLength + existingSize,
+			read:         existingSize,
+			progressFunc: progressFn,
 		}
 	}
 
@@ -589,11 +583,11 @@ func CleanupPartFiles(outputPath string) error {
 
 // progressReader wraps an io.Reader to report progress.
 type progressReader struct {
-	ctx        context.Context
-	reader     io.Reader
-	total      int64
-	read       int64
-	progressFn ProgressFunc
+	ctx          context.Context
+	reader       io.Reader
+	total        int64
+	read         int64
+	progressFunc ProgressFunc
 }
 
 func (pr *progressReader) Read(p []byte) (int, error) {
@@ -604,8 +598,8 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 	n, err := pr.reader.Read(p)
 	if n > 0 {
 		pr.read += int64(n)
-		if pr.progressFn != nil {
-			pr.progressFn(Progress{TotalBytes: pr.total, DownloadedBytes: pr.read})
+		if pr.progressFunc != nil {
+			pr.progressFunc(pr.read, pr.total)
 		}
 	}
 	return n, err

@@ -98,20 +98,20 @@ func main() {
 		var lastTime = time.Now()
 		var speed float64
 
-		progressFn = func(p dl.Progress) {
+		progressFn = func(downloaded, total int64) {
 			now := time.Now()
 			elapsed := now.Sub(lastTime).Seconds()
 			if lastDownloaded == 0 {
-				lastDownloaded = p.DownloadedBytes
+				lastDownloaded = downloaded
 			}
-			if elapsed > 5 || p.DownloadedBytes == p.TotalBytes {
-				speed = float64(p.DownloadedBytes-lastDownloaded) / elapsed
-				lastDownloaded = p.DownloadedBytes
+			if elapsed > 5 || downloaded == total {
+				speed = float64(downloaded-lastDownloaded) / elapsed
+				lastDownloaded = downloaded
 				lastTime = now
 
-				if p.TotalBytes > 0 {
-					percent := float64(p.DownloadedBytes) / float64(p.TotalBytes) * 100
-					fmt.Printf("Progress: %.1f%% (%s / %s) - Speed: %s/s\t\r", percent, formatBytes(p.DownloadedBytes), formatBytes(p.TotalBytes), formatBytes(int64(speed)))
+				if total > 0 {
+					percent := float64(downloaded) / float64(total) * 100
+					fmt.Printf("Progress: %.1f%% (%s / %s) - Speed: %s/s\t\r", percent, formatBytes(downloaded), formatBytes(total), formatBytes(int64(speed)))
 				}
 			}
 		}
