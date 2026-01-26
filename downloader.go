@@ -135,11 +135,29 @@ func (d *Downloader) Download(ctx context.Context, outputPath string, progressFn
 		}
 		// Check if partial file exists that can be resumed (e.g., downloaded by wget or another tool)
 		if fileInfo.size > 0 && stat.Size() > 0 && stat.Size() < fileInfo.size && (fileInfo.supportsRange || d.forceTryRange) {
-			err := d.resumeExistingFile(ctx, outputPath, urls, fileInfo, stat.Size(), progressFn)
-			if err == nil {
-				return nil
+			existingSize := stat.Size()
+			remainingSize := fileInfo.size - existingSize
+
+			// Ensure output directory exists for chunked resume
+			if err := os.MkdirAll(downloadPath(outputPath), 0755); err != nil {
+				return fmt.Errorf("failed to create output directory: %w", err)
 			}
-			// If resume failed (e.g., server doesn't support range), fall through to fresh download
+
+			// Use chunked resume if remaining size is large enough
+			if remainingSize > d.chunkSize {
+				err := d.resumeExistingFileChunked(ctx, outputPath, urls, fileInfo, existingSize, progressFn)
+				if err == nil {
+					return nil
+				}
+				// If chunked resume failed, fall through to fresh download
+			} else {
+				// Use single-stream resume for smaller remaining size
+				err := d.resumeExistingFile(ctx, outputPath, urls, fileInfo, existingSize, progressFn)
+				if err == nil {
+					return nil
+				}
+				// If resume failed (e.g., server doesn't support range), fall through to fresh download
+			}
 		}
 	}
 
@@ -345,6 +363,181 @@ func (d *Downloader) resumeExistingFile(ctx context.Context, outputPath string, 
 		return lastErr
 	}
 	return errors.New("failed to resume download from all mirrors")
+}
+
+// resumeExistingFileChunked resumes downloading to an existing partial file using chunked concurrent downloads.
+// It treats the existing file as the first "chunk" and downloads remaining chunks in parallel.
+func (d *Downloader) resumeExistingFileChunked(ctx context.Context, outputPath string, urls []string, info *fileInfo, existingSize int64, progressFn ProgressFunc) error {
+	// Calculate chunks for the remaining portion only
+	remainingChunks := d.calculateChunksFromOffset(outputPath, existingSize, info.size)
+	if len(remainingChunks) == 0 {
+		return nil
+	}
+
+	// Create a channel for chunks
+	chunkCh := make(chan chunk, len(remainingChunks))
+	for _, c := range remainingChunks {
+		chunkCh <- c
+	}
+	close(chunkCh)
+
+	// Create error channel
+	errCh := make(chan error, d.concurrency)
+
+	// Create a context that can be canceled on error
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Progress tracking - start with existing size already downloaded
+	var downloadedBytes atomic.Int64
+	var workersDownloadBytes []atomic.Int64
+
+	reportCh := make(chan struct{}, 1)
+
+	if progressFn != nil {
+		downloadedBytes.Store(existingSize)
+		workersDownloadBytes = make([]atomic.Int64, d.concurrency)
+		go func() {
+			ticker := time.NewTicker(1 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					totalDownloaded := downloadedBytes.Load()
+					for i := range workersDownloadBytes {
+						totalDownloaded += workersDownloadBytes[i].Load()
+					}
+					progressFn(Progress{TotalBytes: info.size, DownloadedBytes: totalDownloaded})
+				}
+			}
+		}()
+	}
+	_ = reportCh // suppress unused variable warning
+
+	concurrency := min(d.concurrency, len(remainingChunks))
+
+	// Start workers
+	var wg sync.WaitGroup
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+
+			var chunkProgressFn ProgressFunc
+			if progressFn != nil {
+				chunkProgressFn = func(p Progress) {
+					workersDownloadBytes[workerID].Store(p.DownloadedBytes)
+				}
+			}
+
+			mirrorIdx := workerID % len(urls)
+			for c := range chunkCh {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+
+				// Try all mirrors starting from assigned one
+				downloaded := false
+				for attempt := 0; attempt < len(urls)*d.retryPerHost; attempt++ {
+					url := urls[(mirrorIdx+attempt)%len(urls)]
+					err := d.downloadChunkToFile(ctx, url, c, chunkProgressFn)
+					if err == nil {
+						downloaded = true
+						break
+					}
+					if errors.Is(err, context.Canceled) {
+						break
+					}
+				}
+
+				if !downloaded {
+					select {
+					case errCh <- fmt.Errorf("failed to download chunk %d from all mirrors", c.index):
+						cancel()
+					default:
+					}
+					return
+				}
+
+				if progressFn != nil {
+					downloadedBytes.Add(workersDownloadBytes[workerID].Swap(0))
+				}
+			}
+		}(i)
+	}
+
+	// Wait for all workers to complete
+	wg.Wait()
+
+	// Check for errors
+	select {
+	case err := <-errCh:
+		return err
+	default:
+	}
+
+	// All chunks downloaded, merge them with the existing file
+	return d.mergeChunksWithExistingFile(outputPath, existingSize, remainingChunks)
+}
+
+// calculateChunksFromOffset calculates chunks starting from a given offset.
+func (d *Downloader) calculateChunksFromOffset(outputPath string, startOffset, totalSize int64) []chunk {
+	var chunks []chunk
+	chunkSize := d.chunkSize
+	index := 0
+
+	for offset := startOffset; offset < totalSize; offset += chunkSize {
+		end := offset + chunkSize - 1
+		if end >= totalSize {
+			end = totalSize - 1
+		}
+
+		chunks = append(chunks, chunk{
+			index:    index,
+			start:    offset,
+			end:      end,
+			partFile: chunkPartPath(outputPath, index, offset, end),
+		})
+		index++
+	}
+
+	return chunks
+}
+
+// mergeChunksWithExistingFile appends chunk files to the existing partial file.
+func (d *Downloader) mergeChunksWithExistingFile(outputPath string, existingSize int64, chunks []chunk) error {
+	// Sort chunks by index to ensure correct order
+	sort.Slice(chunks, func(i, j int) bool {
+		return chunks[i].index < chunks[j].index
+	})
+
+	// Open output file for appending
+	outFile, err := os.OpenFile(outputPath, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open output file for appending: %w", err)
+	}
+	defer outFile.Close()
+
+	// Append each chunk
+	for _, c := range chunks {
+		partFile, err := os.Open(c.partFile)
+		if err != nil {
+			return fmt.Errorf("failed to open part file %s: %w", c.partFile, err)
+		}
+
+		_, err = io.Copy(outFile, partFile)
+		_ = partFile.Close()
+		if err != nil {
+			return fmt.Errorf("failed to copy part file %s: %w", c.partFile, err)
+		}
+	}
+
+	_ = CleanupPartFiles(outputPath)
+	return nil
 }
 
 // downloadChunked performs a chunked concurrent download with resume support.
