@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -135,11 +136,11 @@ func (d *Downloader) Download(ctx context.Context, outputPath string, progressFu
 	}
 
 	if !fileInfo.supportsRange && !d.forceTryRange {
-		return d.downloadDirect(ctx, outputPath, urls, progressFunc)
+		return d.downloadDirect(ctx, outputPath, urls, fileInfo, progressFunc)
 	}
 
 	if fileInfo.size <= d.chunkSize {
-		return d.downloadDirect(ctx, outputPath, urls, progressFunc)
+		return d.downloadDirect(ctx, outputPath, urls, fileInfo, progressFunc)
 	}
 
 	// Chunked concurrent download with resume support
@@ -149,6 +150,7 @@ func (d *Downloader) Download(ctx context.Context, outputPath string, progressFu
 // fileInfo contains information about the remote file.
 type fileInfo struct {
 	size          int64
+	etag          string
 	supportsRange bool
 }
 
@@ -177,6 +179,7 @@ func (d *Downloader) getFileInfo(ctx context.Context, urls []string) (*fileInfo,
 		supportsRange := resp.Header.Get("Accept-Ranges") == "bytes"
 		return &fileInfo{
 			size:          resp.ContentLength,
+			etag:          resp.Header.Get("ETag"),
 			supportsRange: supportsRange,
 		}, nil
 	}
@@ -188,8 +191,8 @@ func (d *Downloader) getFileInfo(ctx context.Context, urls []string) (*fileInfo,
 }
 
 // downloadDirect downloads a file without chunking (fallback for small files or servers without range support).
-func (d *Downloader) downloadDirect(ctx context.Context, outputPath string, urls []string, progressFunc ProgressFunc) error {
-	tmpFile := entireFilePath(outputPath) + tmpFileSuffix
+func (d *Downloader) downloadDirect(ctx context.Context, outputPath string, urls []string, info *fileInfo, progressFunc ProgressFunc) error {
+	tmpFile := entireFilePath(outputPath, info) + tmpFileSuffix
 	var lastErr error
 	for _, url := range urls {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -271,7 +274,7 @@ func (d *Downloader) downloadDirect(ctx context.Context, outputPath string, urls
 func (d *Downloader) downloadChunked(ctx context.Context, outputPath string, urls []string, info *fileInfo, progressFunc ProgressFunc) error {
 
 	// Calculate all chunks and their part file paths
-	allChunks := d.calculateChunks(outputPath, info.size)
+	allChunks := d.calculateChunks(outputPath, info)
 	if len(allChunks) == 0 {
 		return nil
 	}
@@ -406,32 +409,48 @@ func downloadPath(outputPath string) string {
 	return filepath.Join(filepath.Dir(outputPath), tmpDirPrefix+filepath.Base(outputPath))
 }
 
-func entireFilePath(outputPath string) string {
-	return fmt.Sprintf("%s/entire", downloadPath(outputPath))
+func tempFileName(info *fileInfo) string {
+	if info.etag != "" {
+		return fmt.Sprintf("etag-%s", normalizeEtag(info.etag))
+	}
+	if info.size > 0 {
+		return fmt.Sprintf("size-%d", info.size)
+	}
+	return "unknown"
+}
+
+func normalizeEtag(etag string) string {
+	etag = strings.TrimPrefix(etag, "W/")
+	etag = strings.Trim(etag, "\"")
+	return etag
+}
+
+func entireFilePath(outputPath string, info *fileInfo) string {
+	return fmt.Sprintf("%s/entire-%s", downloadPath(outputPath), tempFileName(info))
 }
 
 // chunkPartPath returns the path to a chunk part file.
-func chunkPartPath(outputPath string, index int, start, end int64) string {
-	return fmt.Sprintf("%s/%d-%d-%d", downloadPath(outputPath), index, start, end)
+func chunkPartPath(outputPath string, info *fileInfo, start int64) string {
+	return fmt.Sprintf("%s/offset-%d-%s", downloadPath(outputPath), start, tempFileName(info))
 }
 
 // calculateChunks calculates all chunks needed for the download.
-func (d *Downloader) calculateChunks(outputPath string, totalSize int64) []chunk {
+func (d *Downloader) calculateChunks(outputPath string, info *fileInfo) []chunk {
 	var chunks []chunk
 	chunkSize := d.chunkSize
 	index := 0
 
-	for offset := int64(0); offset < totalSize; offset += chunkSize {
+	for offset := int64(0); offset < info.size; offset += chunkSize {
 		end := offset + chunkSize - 1
-		if end >= totalSize {
-			end = totalSize - 1
+		if end >= info.size {
+			end = info.size - 1
 		}
 
 		chunks = append(chunks, chunk{
 			index:    index,
 			start:    offset,
 			end:      end,
-			partFile: chunkPartPath(outputPath, index, offset, end),
+			partFile: chunkPartPath(outputPath, info, offset),
 		})
 		index++
 	}
