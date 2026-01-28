@@ -191,7 +191,7 @@ func (d *Downloader) getFileInfo(ctx context.Context, urls []string) (*fileInfo,
 
 // downloadDirect downloads a file without chunking (fallback for small files or servers without range support).
 func (d *Downloader) downloadDirect(ctx context.Context, outputPath string, urls []string, info *fileInfo, progressFunc ProgressFunc) error {
-	partFile := entireFilePath(outputPath, info)
+	partFile := chunkPartPath(outputPath, info, 0)
 	var lastErr error
 	for _, url := range urls {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -464,10 +464,6 @@ func normalizeEtag(etag string) string {
 	etag = strings.TrimPrefix(etag, "W/")
 	etag = strings.Trim(etag, "\"")
 	return etag
-}
-
-func entireFilePath(outputPath string, info *fileInfo) string {
-	return fmt.Sprintf("%s/entire-%s", downloadPath(outputPath), tempFileName(info))
 }
 
 // chunkPartPath returns the path to a chunk part file.
