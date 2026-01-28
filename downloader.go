@@ -486,12 +486,11 @@ func parseChunkOffset(name string, info *fileInfo) int64 {
 	if !strings.HasPrefix(name, "offset-") {
 		return -1
 	}
-	name = strings.TrimPrefix(name, "offset-")
-	var offset int64
-	if _, err := fmt.Sscanf(name, "%d", &offset); err != nil {
+	offset, err := strconv.ParseUint(name[7:], 10, 64)
+	if err != nil {
 		return -1
 	}
-	return offset
+	return int64(offset)
 }
 
 // discoverExistingChunks scans the download directory for existing chunk files.
@@ -731,6 +730,11 @@ func (d *Downloader) mergeChunkFiles(dstFile, srcFile string, offset int64) erro
 	}
 
 	_, err = io.Copy(dst, src)
+	if err != nil {
+		return err
+	}
+
+	err = dst.Sync()
 	if err != nil {
 		return err
 	}
