@@ -351,7 +351,7 @@ func (d *Downloader) downloadChunked(ctx context.Context, outputPath string, url
 			}
 
 			mirrorIdx := workerID % len(urls)
-			for c := range chunkCh {
+			for chunk := range chunkCh {
 				select {
 				case <-ctx.Done():
 					return
@@ -362,7 +362,7 @@ func (d *Downloader) downloadChunked(ctx context.Context, outputPath string, url
 				downloaded := false
 				for attempt := 0; attempt < len(urls)*d.retryPerHost; attempt++ {
 					url := urls[(mirrorIdx+attempt)%len(urls)]
-					err := d.downloadChunkToFile(ctx, url, *c, chunkProgressFn)
+					err := d.downloadChunkToFile(ctx, url, chunk, chunkProgressFn)
 					if err == nil {
 						downloaded = true
 						break
@@ -374,7 +374,7 @@ func (d *Downloader) downloadChunked(ctx context.Context, outputPath string, url
 
 				if !downloaded {
 					select {
-					case errCh <- fmt.Errorf("failed to download chunk %d-%d from all mirrors", c.start, c.end):
+					case errCh <- fmt.Errorf("failed to download chunk %d-%d from all mirrors", chunk.start, chunk.end):
 						cancel()
 					default:
 					}
@@ -385,7 +385,7 @@ func (d *Downloader) downloadChunked(ctx context.Context, outputPath string, url
 					downloadedBytes.Add(workersDownloadBytes[workerID].Swap(0))
 				}
 
-				c.existing.Store(true)
+				chunk.existing.Store(true)
 
 				select {
 				case chunkCompletedCh <- struct{}{}:
@@ -585,7 +585,7 @@ func (d *Downloader) chunksForRange(outputPath string, info *fileInfo, start, en
 
 // downloadChunkToFile downloads a single chunk to its part file.
 // It supports resuming from a partially downloaded file.
-func (d *Downloader) downloadChunkToFile(ctx context.Context, url string, c chunk, progressFn ProgressFunc) error {
+func (d *Downloader) downloadChunkToFile(ctx context.Context, url string, c *chunk, progressFn ProgressFunc) error {
 	expectedSize := c.end - c.start + 1
 
 	// Check if there's a partial download we can resume from
