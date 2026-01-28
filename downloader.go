@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -428,7 +429,16 @@ func (d *Downloader) downloadChunked(ctx context.Context, outputPath string, url
 	default:
 	}
 
-	err := os.Rename(chunkPartPath(outputPath, info, 0), outputPath)
+	firstChunk := chunks[0]
+	fi, err := os.Stat(firstChunk.partFile)
+	if err != nil {
+		return fmt.Errorf("failed to stat final part file: %w", err)
+	}
+	if fi.Size() != info.size {
+		return fmt.Errorf("final file size mismatch: expected %d, got %d", info.size, fi.Size())
+	}
+
+	err = os.Rename(firstChunk.partFile, outputPath)
 	if err != nil {
 		return fmt.Errorf("failed to rename final file: %w", err)
 	}
