@@ -113,7 +113,7 @@ func NewDownloader(opts ...Option) *Downloader {
 		chunkSize:        DefaultChunkSize,
 		concurrency:      DefaultConcurrency,
 		retryPerHost:     DefaultRetryPerHost,
-		forceTryRange:    true,
+		forceTryRange:    false,
 		resumeFromOutput: false,
 	}
 
