@@ -66,14 +66,6 @@ func main() {
 		}
 	}
 
-	d := dl.NewDownloader(
-		dl.WithConcurrency(concurrency),
-		dl.WithChunkSize(chunkSize),
-		dl.WithRetryPerHost(retryPerHost),
-		dl.WithForceTryRange(true),
-		dl.WithResumeFromOutput(resumeFromOutput),
-	)
-
 	// Setup context with cancellation on interrupt
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -87,7 +79,7 @@ func main() {
 	}()
 
 	// Progress callback
-	var progressFn dl.ProgressFunc
+	var progressFunc dl.ProgressFunc
 	if !quiet {
 		fmt.Printf("Downloading to: %s\n", output)
 		fmt.Printf("Using %d concurrent\n", concurrency)
@@ -101,7 +93,7 @@ func main() {
 		var lastTime = time.Now()
 		var speed float64
 
-		progressFn = func(downloaded, total int64) {
+		progressFunc = func(name string, downloaded, total int64) {
 			now := time.Now()
 			elapsed := now.Sub(lastTime).Seconds()
 			if lastDownloaded == 0 {
@@ -120,8 +112,17 @@ func main() {
 		}
 	}
 
+	d := dl.NewDownloader(
+		dl.WithConcurrency(concurrency),
+		dl.WithChunkSize(chunkSize),
+		dl.WithRetryPerHost(retryPerHost),
+		dl.WithForceTryRange(true),
+		dl.WithResumeFromOutput(resumeFromOutput),
+		dl.WithProgressFunc(progressFunc),
+	)
+
 	// Start download
-	err := d.Download(ctx, output, progressFn, urls...)
+	err := d.Download(ctx, output, urls...)
 	if err != nil {
 		if ctx.Err() != nil {
 			os.Exit(130) // Standard exit code for SIGINT

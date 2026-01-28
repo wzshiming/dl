@@ -49,6 +49,9 @@ type Downloader struct {
 
 	// resumeFromOutput indicates whether to resume from existing output file.
 	resumeFromOutput bool
+
+	// progressFunc is the callback function for reporting download progress.
+	progressFunc ProgressFunc
 }
 
 type Option func(*Downloader)
@@ -89,6 +92,12 @@ func WithResumeFromOutput(resume bool) Option {
 	}
 }
 
+func WithProgressFunc(progressFunc ProgressFunc) Option {
+	return func(d *Downloader) {
+		d.progressFunc = progressFunc
+	}
+}
+
 // NewDownloader creates a new Downloader with default settings.
 func NewDownloader(opts ...Option) *Downloader {
 	d := &Downloader{
@@ -116,10 +125,10 @@ type chunk struct {
 }
 
 // ProgressFunc is a callback function for reporting download progress.
-type ProgressFunc func(downloaded, total int64)
+type ProgressFunc func(name string, downloaded, total int64)
 
 // Download downloads a file with progress reporting.
-func (d *Downloader) Download(ctx context.Context, outputPath string, progressFunc ProgressFunc, urls ...string) error {
+func (d *Downloader) Download(ctx context.Context, outputPath string, urls ...string) error {
 	if len(urls) == 0 {
 		return ErrNoMirrors
 	}
@@ -133,8 +142,8 @@ func (d *Downloader) Download(ctx context.Context, outputPath string, progressFu
 	outputExsiting := false
 	if stat, err := os.Stat(outputPath); err == nil {
 		if stat.Size() == info.size && info.size > 0 {
-			if progressFunc != nil {
-				progressFunc(info.size, info.size)
+			if d.progressFunc != nil {
+				d.progressFunc(outputPath, info.size, info.size)
 			}
 			return nil
 		}
@@ -147,7 +156,7 @@ func (d *Downloader) Download(ctx context.Context, outputPath string, progressFu
 	}
 
 	if !info.supportsRange && !d.forceTryRange {
-		return d.downloadDirect(ctx, outputPath, urls, info, progressFunc)
+		return d.downloadDirect(ctx, outputPath, urls, info)
 	}
 
 	if outputExsiting && d.resumeFromOutput {
@@ -162,11 +171,11 @@ func (d *Downloader) Download(ctx context.Context, outputPath string, progressFu
 	}
 
 	if info.size <= d.chunkSize {
-		return d.downloadDirect(ctx, outputPath, urls, info, progressFunc)
+		return d.downloadDirect(ctx, outputPath, urls, info)
 	}
 
 	// Chunked concurrent download with resume support
-	return d.downloadChunked(ctx, outputPath, urls, info, progressFunc)
+	return d.downloadChunked(ctx, outputPath, urls, info)
 }
 
 // fileInfo contains information about the remote file.
@@ -213,7 +222,7 @@ func (d *Downloader) getFileInfo(ctx context.Context, urls []string) (*fileInfo,
 }
 
 // downloadDirect downloads a file without chunking (fallback for small files or servers without range support).
-func (d *Downloader) downloadDirect(ctx context.Context, outputPath string, urls []string, info *fileInfo, progressFunc ProgressFunc) error {
+func (d *Downloader) downloadDirect(ctx context.Context, outputPath string, urls []string, info *fileInfo) error {
 	partFile := chunkPartPath(outputPath, info, 0)
 	var lastErr error
 	for _, url := range urls {
@@ -257,13 +266,15 @@ func (d *Downloader) downloadDirect(ctx context.Context, outputPath string, urls
 		}
 
 		var reader io.Reader = resp.Body
-		if progressFunc != nil {
+		if d.progressFunc != nil {
 			reader = &progressReader{
-				ctx:          ctx,
-				reader:       resp.Body,
-				total:        resp.ContentLength + existingSize,
-				read:         existingSize,
-				progressFunc: progressFunc,
+				ctx:    ctx,
+				reader: resp.Body,
+				total:  resp.ContentLength + existingSize,
+				read:   existingSize,
+				progressFunc: func(downloaded, total int64) {
+					d.progressFunc(outputPath, downloaded, total)
+				},
 			}
 		}
 
@@ -293,14 +304,14 @@ func (d *Downloader) downloadDirect(ctx context.Context, outputPath string, urls
 
 // downloadChunked performs a chunked concurrent download with resume support.
 // Each chunk is downloaded to a separate part file, then merged when complete.
-func (d *Downloader) downloadChunked(ctx context.Context, outputPath string, urls []string, info *fileInfo, progressFunc ProgressFunc) error {
+func (d *Downloader) downloadChunked(ctx context.Context, outputPath string, urls []string, info *fileInfo) error {
 	existingChunks := d.discoverExistingChunks(outputPath, info)
 
 	// Progress tracking
 	var downloadedBytes atomic.Int64
 	var workersDownloadBytes []atomic.Int64
 
-	if progressFunc != nil {
+	if d.progressFunc != nil {
 		for _, c := range existingChunks {
 			downloadedBytes.Add(c.end - c.start + 1)
 		}
@@ -317,7 +328,7 @@ func (d *Downloader) downloadChunked(ctx context.Context, outputPath string, url
 					for i := range workersDownloadBytes {
 						totalDownloaded += workersDownloadBytes[i].Load()
 					}
-					progressFunc(totalDownloaded, info.size)
+					d.progressFunc(outputPath, totalDownloaded, info.size)
 				}
 			}
 		}()
@@ -361,9 +372,9 @@ func (d *Downloader) downloadChunked(ctx context.Context, outputPath string, url
 		go func(workerID int) {
 			defer wg.Done()
 
-			var chunkProgressFn ProgressFunc
-			if progressFunc != nil {
-				chunkProgressFn = func(downloaded, total int64) {
+			var chunkProgressFunc func(downloaded, total int64)
+			if d.progressFunc != nil {
+				chunkProgressFunc = func(downloaded, total int64) {
 					workersDownloadBytes[workerID].Store(downloaded)
 					select {
 					case reportCh <- struct{}{}:
@@ -384,7 +395,7 @@ func (d *Downloader) downloadChunked(ctx context.Context, outputPath string, url
 				downloaded := false
 				for attempt := 0; attempt < len(urls)*d.retryPerHost; attempt++ {
 					url := urls[(mirrorIdx+attempt)%len(urls)]
-					err := d.downloadChunkToFile(ctx, url, chunk, chunkProgressFn)
+					err := d.downloadChunkToFile(ctx, url, chunk, chunkProgressFunc)
 					if err == nil {
 						downloaded = true
 						break
@@ -403,7 +414,7 @@ func (d *Downloader) downloadChunked(ctx context.Context, outputPath string, url
 					return
 				}
 
-				if progressFunc != nil {
+				if d.progressFunc != nil {
 					downloadedBytes.Add(workersDownloadBytes[workerID].Swap(0))
 				}
 
@@ -607,7 +618,7 @@ func (d *Downloader) chunksForRange(outputPath string, info *fileInfo, start, en
 
 // downloadChunkToFile downloads a single chunk to its part file.
 // It supports resuming from a partially downloaded file.
-func (d *Downloader) downloadChunkToFile(ctx context.Context, url string, c *chunk, progressFn ProgressFunc) error {
+func (d *Downloader) downloadChunkToFile(ctx context.Context, url string, c *chunk, progressFunc func(downloaded, total int64)) error {
 	expectedSize := c.end - c.start + 1
 
 	// Check if there's a partial download we can resume from
@@ -616,8 +627,8 @@ func (d *Downloader) downloadChunkToFile(ctx context.Context, url string, c *chu
 		existingSize = stat.Size()
 		// If the file is already complete, we're done
 		if existingSize == expectedSize {
-			if progressFn != nil {
-				progressFn(expectedSize, expectedSize)
+			if progressFunc != nil {
+				progressFunc(expectedSize, expectedSize)
 			}
 			return nil
 		}
@@ -650,13 +661,13 @@ func (d *Downloader) downloadChunkToFile(ctx context.Context, url string, c *chu
 	}
 
 	var reader io.Reader = resp.Body
-	if progressFn != nil {
+	if progressFunc != nil {
 		reader = &progressReader{
 			ctx:          ctx,
 			reader:       resp.Body,
 			total:        resp.ContentLength + existingSize,
 			read:         existingSize,
-			progressFunc: progressFn,
+			progressFunc: progressFunc,
 		}
 	}
 
@@ -776,7 +787,7 @@ type progressReader struct {
 	reader       io.Reader
 	total        int64
 	read         int64
-	progressFunc ProgressFunc
+	progressFunc func(downloaded, total int64)
 }
 
 func (pr *progressReader) Read(p []byte) (int, error) {
