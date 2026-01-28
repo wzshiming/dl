@@ -20,9 +20,10 @@ import (
 const DefaultChunkSize = 100 * 1024 * 1024
 
 // DefaultConcurrency is the default number of concurrent download workers.
-const DefaultConcurrency = 4
+const DefaultConcurrency = 8
 
-const DefaultRetryPerHost = 2
+// DefaultRetryPerHost is the default number of retries per host for failed chunk downloads.
+const DefaultRetryPerHost = 4
 
 const tmpDirPrefix = ".dl-"
 
