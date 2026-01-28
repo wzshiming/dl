@@ -46,6 +46,9 @@ type Downloader struct {
 
 	// forceTryRange forces chunked download even if server doesn't advertise range support.
 	forceTryRange bool
+
+	// resumeFromOutput indicates whether to resume from existing output file.
+	resumeFromOutput bool
 }
 
 type Option func(*Downloader)
@@ -80,14 +83,21 @@ func WithForceTryRange(force bool) Option {
 	}
 }
 
+func WithResumeFromOutput(resume bool) Option {
+	return func(d *Downloader) {
+		d.resumeFromOutput = resume
+	}
+}
+
 // NewDownloader creates a new Downloader with default settings.
 func NewDownloader(opts ...Option) *Downloader {
 	d := &Downloader{
-		httpClient:    http.DefaultClient,
-		chunkSize:     DefaultChunkSize,
-		concurrency:   DefaultConcurrency,
-		retryPerHost:  DefaultRetryPerHost,
-		forceTryRange: true,
+		httpClient:       http.DefaultClient,
+		chunkSize:        DefaultChunkSize,
+		concurrency:      DefaultConcurrency,
+		retryPerHost:     DefaultRetryPerHost,
+		forceTryRange:    true,
+		resumeFromOutput: false,
 	}
 
 	for _, opt := range opts {
@@ -115,19 +125,20 @@ func (d *Downloader) Download(ctx context.Context, outputPath string, progressFu
 	}
 
 	// Get file information from the first available mirror
-	fileInfo, err := d.getFileInfo(ctx, urls)
+	info, err := d.getFileInfo(ctx, urls)
 	if err != nil {
 		return fmt.Errorf("failed to get file info: %w", err)
 	}
 
-	// Check if file is already complete
+	outputExsiting := false
 	if stat, err := os.Stat(outputPath); err == nil {
-		if stat.Size() == fileInfo.size && fileInfo.size > 0 {
+		if stat.Size() == info.size && info.size > 0 {
 			if progressFunc != nil {
-				progressFunc(fileInfo.size, fileInfo.size)
+				progressFunc(info.size, info.size)
 			}
 			return nil
 		}
+		outputExsiting = true
 	}
 
 	// Ensure output directory exists
@@ -135,16 +146,27 @@ func (d *Downloader) Download(ctx context.Context, outputPath string, progressFu
 		return fmt.Errorf("failed to create output directory: %w", err)
 	}
 
-	if !fileInfo.supportsRange && !d.forceTryRange {
-		return d.downloadDirect(ctx, outputPath, urls, fileInfo, progressFunc)
+	if !info.supportsRange && !d.forceTryRange {
+		return d.downloadDirect(ctx, outputPath, urls, info, progressFunc)
 	}
 
-	if fileInfo.size <= d.chunkSize {
-		return d.downloadDirect(ctx, outputPath, urls, fileInfo, progressFunc)
+	if outputExsiting && d.resumeFromOutput {
+		firstChunk := chunkPartPath(outputPath, info, 0)
+		_, err := os.Stat(firstChunk)
+		if os.IsNotExist(err) {
+			err = os.Link(outputPath, firstChunk)
+			if err != nil {
+				return fmt.Errorf("failed to create link for resuming: %w", err)
+			}
+		}
+	}
+
+	if info.size <= d.chunkSize {
+		return d.downloadDirect(ctx, outputPath, urls, info, progressFunc)
 	}
 
 	// Chunked concurrent download with resume support
-	return d.downloadChunked(ctx, outputPath, urls, fileInfo, progressFunc)
+	return d.downloadChunked(ctx, outputPath, urls, info, progressFunc)
 }
 
 // fileInfo contains information about the remote file.

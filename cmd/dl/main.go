@@ -15,11 +15,12 @@ import (
 )
 
 var (
-	output       string
-	concurrency  int
-	chunkSize    int64
-	quiet        bool
-	retryPerHost int
+	output           string
+	concurrency      int
+	chunkSize        int64
+	quiet            bool
+	retryPerHost     int
+	resumeFromOutput bool
 )
 
 func init() {
@@ -27,6 +28,7 @@ func init() {
 	flag.IntVar(&concurrency, "c", dl.DefaultConcurrency, "Number of concurrent connections")
 	flag.Int64Var(&chunkSize, "chunk-size", dl.DefaultChunkSize, "Size of each download chunk in bytes")
 	flag.IntVar(&retryPerHost, "r", dl.DefaultRetryPerHost, "Number of retries per host on failure")
+	flag.BoolVar(&resumeFromOutput, "resume-from-output", false, "Resume download from existing output file")
 	flag.BoolVar(&quiet, "q", false, "Quiet mode (no progress output)")
 
 	flag.Usage = func() {
@@ -69,6 +71,7 @@ func main() {
 		dl.WithChunkSize(chunkSize),
 		dl.WithRetryPerHost(retryPerHost),
 		dl.WithForceTryRange(true),
+		dl.WithResumeFromOutput(resumeFromOutput),
 	)
 
 	// Setup context with cancellation on interrupt
