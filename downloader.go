@@ -54,44 +54,52 @@ type Downloader struct {
 	progressFunc ProgressFunc
 }
 
+// Option defines a functional option for configuring the Downloader.
 type Option func(*Downloader)
 
+// WithHTTPClient sets a custom HTTP client for the Downloader.
 func WithHTTPClient(client *http.Client) Option {
 	return func(d *Downloader) {
 		d.httpClient = client
 	}
 }
 
+// WithChunkSize sets the size of each download chunk in bytes.
 func WithChunkSize(size int64) Option {
 	return func(d *Downloader) {
 		d.chunkSize = size
 	}
 }
 
+// WithConcurrency sets the number of concurrent download workers.
 func WithConcurrency(concurrency int) Option {
 	return func(d *Downloader) {
 		d.concurrency = concurrency
 	}
 }
 
+// WithRetryPerHost sets the number of retries per host for failed chunk downloads.
 func WithRetryPerHost(retry int) Option {
 	return func(d *Downloader) {
 		d.retryPerHost = retry
 	}
 }
 
+// WithForceTryRange sets whether to force chunked download even if server doesn't advertise range support.
 func WithForceTryRange(force bool) Option {
 	return func(d *Downloader) {
 		d.forceTryRange = force
 	}
 }
 
+// WithResumeFromOutput sets whether to resume from existing output file.
 func WithResumeFromOutput(resume bool) Option {
 	return func(d *Downloader) {
 		d.resumeFromOutput = resume
 	}
 }
 
+// WithProgressFunc sets the progress reporting callback function.
 func WithProgressFunc(progressFunc ProgressFunc) Option {
 	return func(d *Downloader) {
 		d.progressFunc = progressFunc
