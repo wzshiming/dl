@@ -15,12 +15,12 @@ import (
 )
 
 var (
-	output           string
-	concurrency      int
-	chunkSize        int64
-	quiet            bool
-	retryPerHost     int
-	resumeFromOutput bool
+	output       string
+	concurrency  int
+	chunkSize    int64
+	quiet        bool
+	retryPerHost int
+	resume       bool
 )
 
 func init() {
@@ -28,7 +28,7 @@ func init() {
 	flag.IntVar(&concurrency, "c", dl.DefaultConcurrency, "Number of concurrent connections")
 	flag.Int64Var(&chunkSize, "chunk-size", dl.DefaultChunkSize, "Size of each download chunk in bytes")
 	flag.IntVar(&retryPerHost, "r", dl.DefaultRetryPerHost, "Number of retries per host on failure")
-	flag.BoolVar(&resumeFromOutput, "resume-from-output", false, "Resume download from existing output file")
+	flag.BoolVar(&resume, "resume", false, "Resume download from existing output file")
 	flag.BoolVar(&quiet, "q", false, "Quiet mode (no progress output)")
 
 	flag.Usage = func() {
@@ -117,12 +117,20 @@ func main() {
 		dl.WithChunkSize(chunkSize),
 		dl.WithRetryPerHost(retryPerHost),
 		dl.WithForceTryRange(true),
-		dl.WithResumeFromOutput(resumeFromOutput),
+		dl.WithResume(resume),
 		dl.WithProgressFunc(progressFunc),
 	)
 
+	// Open output file for writing
+	outputFile, err := os.OpenFile(output, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: failed to open output file: %v\n", err)
+		os.Exit(1)
+	}
+	defer outputFile.Close()
+
 	// Start download
-	err := d.Download(ctx, output, urls...)
+	err = d.Download(ctx, output, outputFile, urls...)
 	if err != nil {
 		if ctx.Err() != nil {
 			os.Exit(130) // Standard exit code for SIGINT
