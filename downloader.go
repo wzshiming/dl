@@ -131,7 +131,7 @@ func NewDownloader(opts ...Option) *Downloader {
 	}
 
 	if d.cacheDir == "" {
-		d.cacheDir = os.TempDir()
+		d.cacheDir = path.Join(os.TempDir(), "dl-cache")
 	}
 
 	return d
@@ -642,7 +642,7 @@ func (d *Downloader) downloadChunked(ctx context.Context, name string, writer Wr
 }
 
 func (d *Downloader) downloadPath(name string) string {
-	return filepath.Join(d.cacheDir, "dl-cache", name)
+	return filepath.Join(d.cacheDir, name)
 }
 
 func tempFileName(info *fileInfo) string {

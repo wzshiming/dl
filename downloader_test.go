@@ -508,7 +508,7 @@ func TestDiscoverExistingChunks_PartFiles(t *testing.T) {
 	info := &fileInfo{size: 1000}
 
 	// Create a part file at offset 512.
-	partDir := filepath.Join(cacheDir, "dl-cache", "name")
+	partDir := filepath.Join(cacheDir, "name")
 	if err := os.MkdirAll(partDir, 0755); err != nil {
 		t.Fatal(err)
 	}
