@@ -360,7 +360,7 @@ func (d *Downloader) getFileInfo(ctx context.Context, urls []string) (*fileInfo,
 		resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
-			lastErr = fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+			lastErr = fmt.Errorf("head request returned status code %d", resp.StatusCode)
 			continue
 		}
 
