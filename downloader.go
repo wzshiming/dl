@@ -406,11 +406,11 @@ func (d *Downloader) downloadWhole(ctx context.Context, name string, writer Writ
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		return fmt.Errorf("%s: unexpected status code: %d (expected 200)", url, resp.StatusCode)
 	}
 
 	if resp.ContentLength > 0 && info.size > 0 && resp.ContentLength != info.size {
-		return fmt.Errorf("content length mismatch: expected %d, got %d", info.size, resp.ContentLength)
+		return fmt.Errorf("%s: content length mismatch: expected %d, got %d", url, info.size, resp.ContentLength)
 	}
 
 	var reader io.Reader = resp.Body
@@ -882,7 +882,7 @@ func (d *Downloader) downloadChunkToFile(ctx context.Context, url string, c *chu
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusPartialContent {
-		return fmt.Errorf("unexpected status code: %d (expected 206)", resp.StatusCode)
+		return fmt.Errorf("%s: unexpected status code: %d (expected 206)", url, resp.StatusCode)
 	}
 
 	var reader io.Reader = resp.Body
