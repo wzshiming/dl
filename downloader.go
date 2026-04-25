@@ -405,8 +405,10 @@ func (d *Downloader) downloadWhole(ctx context.Context, name string, writer Writ
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("%s: unexpected status code: %d (expected 200)", url, resp.StatusCode)
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusPartialContent:
+	default:
+		return fmt.Errorf("%s: unexpected status code: %d", url, resp.StatusCode)
 	}
 
 	if resp.ContentLength > 0 && info.size > 0 && resp.ContentLength != info.size {
