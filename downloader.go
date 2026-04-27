@@ -296,8 +296,15 @@ func (d *Downloader) Download(ctx context.Context, name string, writer Writer, u
 		return ErrNoMirrors
 	}
 
+	return d.DownloadWithURLsFunc(ctx, name, writer, func() ([]string, error) {
+		return urls, nil
+	})
+}
+
+// DownloadWithURLsFunc is a helper that opens the output file and calls Download with the provided URLs.
+func (d *Downloader) DownloadWithURLsFunc(ctx context.Context, name string, writer Writer, urlsFunc func() ([]string, error)) error {
 	// Get file information from the first available mirror
-	info, err := d.getFileInfo(ctx, urls)
+	info, err := d.getFileInfo(ctx, urlsFunc)
 	if err != nil {
 		return fmt.Errorf("failed to get file info: %w", err)
 	}
@@ -324,15 +331,15 @@ func (d *Downloader) Download(ctx context.Context, name string, writer Writer, u
 	}
 
 	if !info.supportsRange && !d.forceTryRange {
-		return d.downloadWholes(ctx, name, writer, info, urls)
+		return d.downloadWholes(ctx, name, writer, info, urlsFunc)
 	}
 
 	if info.size <= d.chunkSize {
-		return d.downloadWholes(ctx, name, writer, info, urls)
+		return d.downloadWholes(ctx, name, writer, info, urlsFunc)
 	}
 
 	// Chunked concurrent download with resume support
-	return d.downloadChunked(ctx, name, writer, info, urls)
+	return d.downloadChunked(ctx, name, writer, info, urlsFunc)
 }
 
 // fileInfo contains information about the remote file.
@@ -343,7 +350,11 @@ type fileInfo struct {
 }
 
 // getFileInfo retrieves file information from the first available mirror.
-func (d *Downloader) getFileInfo(ctx context.Context, urls []string) (*fileInfo, error) {
+func (d *Downloader) getFileInfo(ctx context.Context, urlsFunc func() ([]string, error)) (*fileInfo, error) {
+	urls, err := urlsFunc()
+	if err != nil {
+		return nil, err
+	}
 	var lastErr error
 	for _, url := range urls {
 		req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
@@ -378,9 +389,14 @@ func (d *Downloader) getFileInfo(ctx context.Context, urls []string) (*fileInfo,
 	return nil, errors.New("failed to get file info from all mirrors")
 }
 
-func (d *Downloader) downloadWholes(ctx context.Context, name string, writer Writer, info *fileInfo, urls []string) error {
+func (d *Downloader) downloadWholes(ctx context.Context, name string, writer Writer, info *fileInfo, urlsFunc func() ([]string, error)) error {
+	urls, err := urlsFunc()
+	if err != nil {
+		return err
+	}
 	var lastErr error
-	for _, url := range urls {
+	for i := range len(urls) {
+		url := urls[i%len(urls)]
 		err := d.downloadWhole(ctx, name, writer, info, url)
 		if err == nil {
 			return nil
@@ -389,6 +405,11 @@ func (d *Downloader) downloadWholes(ctx context.Context, name string, writer Wri
 			return err
 		}
 		lastErr = err
+
+		urls, err = urlsFunc()
+		if err != nil {
+			return err
+		}
 	}
 	return lastErr
 }
@@ -448,7 +469,7 @@ func (d *Downloader) downloadWhole(ctx context.Context, name string, writer Writ
 
 // downloadChunked performs a chunked concurrent download with resume support.
 // Each chunk is downloaded to a separate part file, then merged when complete.
-func (d *Downloader) downloadChunked(ctx context.Context, name string, writer Writer, info *fileInfo, urls []string) error {
+func (d *Downloader) downloadChunked(ctx context.Context, name string, writer Writer, info *fileInfo, urlsFunc func() ([]string, error)) error {
 	existingChunks, err := d.discoverExistingChunks(name, info, writer)
 	if err != nil {
 		return fmt.Errorf("failed to discover existing chunks: %w", err)
@@ -540,6 +561,15 @@ func (d *Downloader) downloadChunked(ctx context.Context, name string, writer Wr
 					case reportCh <- struct{}{}:
 					default:
 					}
+				}
+			}
+
+			urls, err := urlsFunc()
+			if err != nil {
+				select {
+				case errCh <- fmt.Errorf("failed to get URLs: %w", err):
+					cancel()
+				default:
 				}
 			}
 
